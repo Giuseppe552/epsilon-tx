@@ -53,6 +53,10 @@ export type { BoltzmannResult, LinkMatrix } from './coinjoin/boltzmann.js'
 export { analysePostMix } from './coinjoin/postmix.js'
 export type { PostMixAnalysis, PostMixIssue } from './coinjoin/postmix.js'
 
+// Monero ring analysis — OSPEAD (2025), Möser et al. (2018)
+export { analyseRing, constructOptimalRing } from './monero/ring.js'
+export type { RingMember, RingAnalysis, OptimalRing } from './monero/ring.js'
+
 // Unified analysis
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
