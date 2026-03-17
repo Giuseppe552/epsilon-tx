@@ -46,6 +46,13 @@ export type { SpectralAnalysis } from './graph/spectral.js'
 export { analyseTimingPrivacy } from './entropy/timing.js'
 export type { TimingAnalysis } from './entropy/timing.js'
 
+// CoinJoin analysis — LaurentMT (2016), Maurer et al. (2025)
+export { computeBoltzmann } from './coinjoin/boltzmann.js'
+export type { BoltzmannResult, LinkMatrix } from './coinjoin/boltzmann.js'
+
+export { analysePostMix } from './coinjoin/postmix.js'
+export type { PostMixAnalysis, PostMixIssue } from './coinjoin/postmix.js'
+
 // Unified analysis
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
