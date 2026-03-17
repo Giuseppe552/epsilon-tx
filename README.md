@@ -1,7 +1,7 @@
 # ε-tx
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests: 68](https://img.shields.io/badge/tests-68_passing-brightgreen)]()
+[![Tests: 92](https://img.shields.io/badge/tests-92_passing-brightgreen)]()
 
 Privacy analysis for Bitcoin transactions. Computes information-theoretic bounds on what a blockchain observer can learn about an address.
 
@@ -23,7 +23,8 @@ $ etx analyse 3FZbgi29cpjq2GjdwV8eyHuJJnkLtktZc5
 git clone https://github.com/Giuseppe552/epsilon-tx.git && cd epsilon-tx
 npm install && npm run build
 npm run cli -- analyse <bitcoin-address>
-npm run cli -- analyse <bitcoin-address> --json | jq .summary
+npm run cli -- analyse <bitcoin-address> --expand 1      # follow co-spend graph 1 hop
+npm run cli -- analyse <bitcoin-address> --json | jq .recommendations
 ```
 
 ## What it analyses
@@ -36,8 +37,10 @@ npm run cli -- analyse <bitcoin-address> --json | jq .summary
 | Change detection | Script-type match + round-payment heuristic | Bitcoin Wiki Privacy |
 | Amount entropy | Shannon entropy of output distributions, CoinJoin scoring | Shannon (1948) |
 | Amount correlation | Cross-tx near-match detection (±1% tolerance) | — |
-| Timing analysis | Circadian timezone model + autocorrelation periodicity detection | — |
+| Timing analysis | Asymmetric circadian timezone model + autocorrelation + DFT + KS test | Biryukov (2014), Massey (1951) |
 | Evidence fusion | Dempster-Shafer combination rule | Dempster (1967), Shafer (1976) |
+| Graph expansion | Recursive co-spend address following (configurable depth) | Meiklejohn (2013) §3 |
+| Recommendations | 10 actionable fixes with estimated bit savings per fix | Bitcoin Wiki Privacy |
 
 All scores are in **bits**. Lower = more private. The breakdown shows which surface leaks the most.
 
@@ -80,7 +83,7 @@ apps/cli/
 ```sh
 npm install
 npm run build
-npm test          # 68 tests across 5 files
+npm test          # 92 tests across 7 files
 npm run cli -- analyse <address>
 ```
 
