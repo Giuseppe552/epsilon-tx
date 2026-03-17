@@ -1,0 +1,16 @@
+{
+  "name": "@etx/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@etx/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

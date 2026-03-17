@@ -32,6 +32,14 @@ export {
 } from './fingerprint/wallet.js'
 export type { ScriptType, WalletFingerprint } from './fingerprint/wallet.js'
 
+// Timing analysis
+export { analyseTimingPrivacy } from './entropy/timing.js'
+export type { TimingAnalysis } from './entropy/timing.js'
+
+// Unified analysis
+export { analyseAddress } from './analyse.js'
+export type { PrivacyReport } from './analyse.js'
+
 // Bitcoin API
 export {
   getAddressTransactions,
