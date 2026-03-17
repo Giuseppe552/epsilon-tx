@@ -57,6 +57,10 @@ export type { PostMixAnalysis, PostMixIssue } from './coinjoin/postmix.js'
 export { analyseRing, constructOptimalRing } from './monero/ring.js'
 export type { RingMember, RingAnalysis, OptimalRing } from './monero/ring.js'
 
+// Lightning routing privacy — Romiti (2020), Herrera-Joancomartí (2019)
+export { computeSenderAnonymity, computeTimingLeakage, computeBalanceProbeResistance, analyseRoutePrivacy, paretoFrontier } from './lightning/routing.js'
+export type { LightningNode, LightningChannel, RouteHop, RoutePrivacy, ParetoPoint } from './lightning/routing.js'
+
 // Unified analysis
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
