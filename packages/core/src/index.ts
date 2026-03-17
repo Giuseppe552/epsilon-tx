@@ -84,7 +84,7 @@ export type { Recommendation } from './fingerprint/recommendations.js'
 // Graph expansion — Meiklejohn et al. (2013) §3
 export { expandGraph } from './bitcoin/expand.js'
 
-// Bitcoin API
+// Bitcoin API — Blockstream
 export {
   getAddressTransactions,
   getTransaction,
@@ -92,3 +92,31 @@ export {
   getAddressSummary,
   clearCache,
 } from './bitcoin/api.js'
+
+// Monero API — public daemon RPC
+export {
+  getBlockchainHeight,
+  getBlockHeader,
+  getTransactionRings,
+  getOutputDistribution,
+  clearMoneroCache,
+} from './monero/api.js'
+
+// Lightning API — mempool.space
+export {
+  getNode,
+  getNodeChannels,
+  getTopNodes,
+  getNetworkStats,
+  buildRouteHop,
+  clearLightningCache,
+} from './lightning/api.js'
+
+// Cross-chain API — Wormhole, LayerZero, L2 explorers
+export {
+  searchWormholeTransfers,
+  searchLayerZeroTransfers,
+  searchL2Transfers,
+  searchAllBridgeTransfers,
+  clearCrossChainCache,
+} from './crosschain/api.js'
