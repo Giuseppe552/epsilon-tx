@@ -1,43 +1,23 @@
 /**
  * Wallet software fingerprinting from transaction structure.
  *
- * Different wallet software creates structurally different transactions.
- * These structural fingerprints reduce the anonymity set — if an adversary
- * knows you use Electrum, they only need to search Electrum users.
+ * 8 heuristics extracted from each transaction:
  *
- * Fingerprinting signals (from Ishaana Misra's research + Bitcoin Wiki):
+ * 1. Input ordering: BIP-69 lexicographic vs random
+ * 2. Output ordering: BIP-69 vs random
+ * 3. Script types: P2PKH / P2SH / P2WPKH / P2TR + mixing
+ * 4. Change output position: first / last / random
+ * 5. nLockTime: 0 (most wallets) vs block height (Bitcoin Core anti-fee-sniping)
+ * 6. Fee rate: round sat/vB (Electrum) vs precise (Bitcoin Core)
+ * 7. Output count: 2 (standard) vs many (batch payment) vs CoinJoin
+ * 8. Consistency across multiple transactions (aggregate fingerprint)
  *
- * 1. Input/output ordering:
- *    - BIP-69: lexicographic ordering (Electrum, some others)
- *    - Insertion order: outputs in order they were added (Bitcoin Core pre-0.19)
- *    - Random: shuffled (Bitcoin Core 0.19+, Wasabi)
+ * Log-likelihood scoring against 7 known wallet profiles.
  *
- * 2. Signature encoding:
- *    - Low-R only: Bitcoin Core since 2018 grinds for low-R (saves 1 byte)
- *    - Standard: half of signatures have high-R (extra DER byte)
- *
- * 3. Change output position:
- *    - Always last (some mobile wallets)
- *    - Random (Bitcoin Core, Wasabi)
- *
- * 4. Script types:
- *    - P2PKH (1...) — legacy
- *    - P2SH-P2WPKH (3...) — nested SegWit
- *    - P2WPKH (bc1q...) — native SegWit v0
- *    - P2TR (bc1p...) — Taproot
- *    - Mixing types in one tx is a fingerprint itself
- *
- * 5. Fee patterns:
- *    - Round sats/vB (Electrum)
- *    - Exact estimation (Bitcoin Core)
- *    - Always overpaying (some mobile wallets)
- *
- * 6. nLockTime:
- *    - 0 (most wallets)
- *    - Current block height (Bitcoin Core anti-fee-sniping)
- *
- * Reference: https://ishaana.com/blog/wallet_fingerprinting/
- * Reference: https://en.bitcoin.it/wiki/Privacy
+ * Reference: Ishaana Misra — "Wallet Fingerprints: Detection & Analysis"
+ *            https://ishaana.com/blog/wallet_fingerprinting/
+ * Reference: Bitcoin Wiki — Privacy page, wallet fingerprinting section
+ * Reference: BIP-69 — Lexicographical Indexing of Transaction Inputs and Outputs
  */
 
 import type { Transaction } from '../graph/cospend.js'
@@ -46,23 +26,25 @@ import { shannonEntropy } from '../entropy/shannon.js'
 export type ScriptType = 'p2pkh' | 'p2sh' | 'p2wpkh' | 'p2tr' | 'unknown'
 
 export interface WalletFingerprint {
-  // Detected features
-  inputOrdering: 'bip69' | 'insertion' | 'random' | 'unknown'
-  outputOrdering: 'bip69' | 'insertion' | 'random' | 'unknown'
-  scriptTypes: { inputs: ScriptType[]; outputs: ScriptType[] }
-  mixedScriptTypes: boolean
-  changePosition: 'first' | 'last' | 'random' | 'unknown'
-
-  // Confidence scores per wallet
-  scores: { wallet: string; confidence: number }[]
-
-  // Privacy impact
-  anonymityReduction: number  // bits of information leaked by the fingerprint
+  features: TransactionFeatures
+  scores: { wallet: string; score: number; confidence: number }[]
+  anonymityReduction: number
 }
 
-/**
- * Detect script type from a Bitcoin address.
- */
+export interface TransactionFeatures {
+  inputOrdering: 'bip69' | 'random' | 'unknown'
+  outputOrdering: 'bip69' | 'random' | 'unknown'
+  scriptTypes: ScriptType[]
+  mixedScriptTypes: boolean
+  changePosition: 'first' | 'last' | 'middle' | 'unknown'
+  hasAntiFeeSniping: boolean
+  feeRateRound: boolean
+  feeRateSatVb: number | null
+  outputCount: number
+  isBatch: boolean
+  isLikelyCoinJoin: boolean
+}
+
 export function detectScriptType(address: string): ScriptType {
   if (address.startsWith('1')) return 'p2pkh'
   if (address.startsWith('3')) return 'p2sh'
@@ -71,33 +53,57 @@ export function detectScriptType(address: string): ScriptType {
   return 'unknown'
 }
 
-/**
- * Check if inputs/outputs follow BIP-69 lexicographic ordering.
- *
- * BIP-69: inputs sorted by (txid, vout), outputs sorted by (value, scriptPubKey).
- * We approximate by checking if output values are sorted ascending.
- */
-function isBip69Ordered(tx: Transaction): { inputs: boolean; outputs: boolean } {
+export function extractFeatures(tx: Transaction): TransactionFeatures {
+  const inputTypes = tx.inputs.map(i => detectScriptType(i.address))
+  const outputTypes = tx.outputs.map(o => detectScriptType(o.address))
+  const allTypes = new Set([...inputTypes, ...outputTypes].filter(t => t !== 'unknown'))
+
+  // BIP-69 check
   const outputValues = tx.outputs.map(o => o.value)
-  const outputsSorted = outputValues.every((v, i) => i === 0 || v >= outputValues[i - 1])
-
-  // For inputs we'd need the previous txid:vout, which we don't always have.
-  // Approximate: check if input addresses are lexicographically sorted.
+  const outputsSorted = outputValues.length > 1 && outputValues.every((v, i) => i === 0 || v >= outputValues[i - 1])
   const inputAddrs = tx.inputs.map(i => i.address)
-  const inputsSorted = inputAddrs.every((a, i) => i === 0 || a >= inputAddrs[i - 1])
+  const inputsSorted = inputAddrs.length > 1 && inputAddrs.every((a, i) => i === 0 || a >= inputAddrs[i - 1])
 
-  return { inputs: inputsSorted, outputs: outputsSorted }
+  // Change detection
+  const change = detectChangeOutput(tx)
+  let changePosition: TransactionFeatures['changePosition'] = 'unknown'
+  if (change.changeIndex === 0) changePosition = 'first'
+  else if (change.changeIndex === tx.outputs.length - 1) changePosition = 'last'
+  else if (change.changeIndex !== null) changePosition = 'middle'
+
+  // Anti-fee-sniping: nLockTime ≈ block height
+  const hasAntiFeeSniping = tx.locktime !== undefined && tx.locktime > 0 &&
+    tx.blockHeight > 0 && Math.abs(tx.locktime - tx.blockHeight) <= 1
+
+  // Fee rate
+  let feeRateSatVb: number | null = null
+  let feeRateRound = false
+  if (tx.vsize && tx.vsize > 0) {
+    feeRateSatVb = tx.fee / tx.vsize
+    feeRateRound = feeRateSatVb % 1 === 0 || feeRateSatVb % 0.5 === 0
+  }
+
+  // CoinJoin: 3+ inputs + 3+ equal outputs
+  const valueCounts = new Map<number, number>()
+  for (const v of outputValues) valueCounts.set(v, (valueCounts.get(v) ?? 0) + 1)
+  const maxEqual = Math.max(...valueCounts.values(), 0)
+  const isLikelyCoinJoin = tx.inputs.length >= 3 && maxEqual >= 3
+
+  return {
+    inputOrdering: tx.inputs.length > 1 ? (inputsSorted ? 'bip69' : 'random') : 'unknown',
+    outputOrdering: tx.outputs.length > 1 ? (outputsSorted ? 'bip69' : 'random') : 'unknown',
+    scriptTypes: [...allTypes],
+    mixedScriptTypes: allTypes.size > 1,
+    changePosition,
+    hasAntiFeeSniping,
+    feeRateRound,
+    feeRateSatVb,
+    outputCount: tx.outputs.length,
+    isBatch: tx.outputs.length > 2 && !isLikelyCoinJoin,
+    isLikelyCoinJoin,
+  }
 }
 
-/**
- * Detect likely change output.
- *
- * Heuristics (from Bitcoin Wiki Privacy page):
- * 1. Round payment heuristic: the round-number output is the payment
- * 2. Script type match: change uses the same script type as inputs
- * 3. Fresh address: change goes to an address not seen before
- *    (we can't check this without full history, so we skip it)
- */
 export function detectChangeOutput(tx: Transaction): {
   changeIndex: number | null
   confidence: number
@@ -110,154 +116,151 @@ export function detectChangeOutput(tx: Transaction): {
   const [o0, o1] = tx.outputs
   const inputScriptTypes = new Set(tx.inputs.map(i => detectScriptType(i.address)))
 
-  // Heuristic 1: script type match
-  const o0TypeMatch = inputScriptTypes.has(detectScriptType(o0.address))
-  const o1TypeMatch = inputScriptTypes.has(detectScriptType(o1.address))
+  const o0Match = inputScriptTypes.has(detectScriptType(o0.address))
+  const o1Match = inputScriptTypes.has(detectScriptType(o1.address))
 
-  if (o0TypeMatch && !o1TypeMatch) {
-    return { changeIndex: 0, confidence: 0.7, heuristic: 'script-type-match' }
-  }
-  if (o1TypeMatch && !o0TypeMatch) {
-    return { changeIndex: 1, confidence: 0.7, heuristic: 'script-type-match' }
-  }
+  if (o0Match && !o1Match) return { changeIndex: 0, confidence: 0.7, heuristic: 'script-type-match' }
+  if (o1Match && !o0Match) return { changeIndex: 1, confidence: 0.7, heuristic: 'script-type-match' }
 
-  // Heuristic 2: round payment amount
-  const o0Round = isRoundAmount(o0.value)
-  const o1Round = isRoundAmount(o1.value)
-
-  if (o0Round && !o1Round) {
-    // o0 is the payment (round), o1 is change
-    return { changeIndex: 1, confidence: 0.6, heuristic: 'round-payment' }
-  }
-  if (o1Round && !o0Round) {
-    return { changeIndex: 0, confidence: 0.6, heuristic: 'round-payment' }
-  }
+  const r0 = roundness(o0.value), r1 = roundness(o1.value)
+  if (r0 > r1) return { changeIndex: 1, confidence: 0.6, heuristic: 'round-payment' }
+  if (r1 > r0) return { changeIndex: 0, confidence: 0.6, heuristic: 'round-payment' }
 
   return { changeIndex: null, confidence: 0, heuristic: 'inconclusive' }
 }
 
-/**
- * Check if an amount is "round" (likely a deliberate payment amount).
- * Round amounts: multiples of 0.001 BTC (100,000 sats), 0.01, 0.1, etc.
- */
-function isRoundAmount(sats: number): boolean {
-  return sats % 100000 === 0 || sats % 1000000 === 0 || sats % 10000000 === 0
+function roundness(sats: number): number {
+  if (sats === 0) return 0
+  let r = 0, v = sats
+  while (v % 10 === 0 && v > 0) { r++; v = Math.floor(v / 10) }
+  return r
 }
 
-/**
- * Fingerprint a transaction — identify which wallet software likely created it.
- */
+// --- Wallet profiles ---
+
+interface WalletProfile {
+  id: string
+  ordering?: 'bip69' | 'random'
+  scripts?: ScriptType[]
+  antiFeeSniping?: boolean
+  roundFee?: boolean
+  changePos?: 'first' | 'last' | 'random'
+  coinJoin?: boolean
+}
+
+// Compiled from research + direct testing
+const PROFILES: WalletProfile[] = [
+  { id: 'bitcoin-core', ordering: 'random', scripts: ['p2wpkh', 'p2tr'], antiFeeSniping: true, changePos: 'random' },
+  { id: 'electrum', ordering: 'bip69', scripts: ['p2wpkh'], roundFee: true },
+  { id: 'wasabi', ordering: 'random', scripts: ['p2wpkh'], coinJoin: true, changePos: 'random' },
+  { id: 'sparrow', ordering: 'random', scripts: ['p2wpkh', 'p2tr'], antiFeeSniping: true },
+  { id: 'blue-wallet', scripts: ['p2sh', 'p2wpkh'], changePos: 'last' },
+  { id: 'ledger-live', scripts: ['p2sh', 'p2wpkh'], changePos: 'last' },
+  { id: 'legacy', scripts: ['p2pkh'] },
+]
+
+function scoreWallets(features: TransactionFeatures): WalletFingerprint['scores'] {
+  return PROFILES.map(p => {
+    let s = 0
+
+    // Ordering (+2 match, -2 mismatch)
+    if (p.ordering === 'bip69') {
+      if (features.inputOrdering === 'bip69') s += 2
+      if (features.outputOrdering === 'bip69') s += 2
+      if (features.inputOrdering === 'random') s -= 2
+    }
+    if (p.ordering === 'random') {
+      if (features.inputOrdering === 'random') s += 1.5
+      if (features.outputOrdering === 'random') s += 1.5
+      if (features.inputOrdering === 'bip69') s -= 1
+    }
+
+    // Script types (+1.5 per match, -2 per mismatch)
+    if (p.scripts) {
+      s += features.scriptTypes.filter(t => p.scripts!.includes(t)).length * 1.5
+      s -= features.scriptTypes.filter(t => !p.scripts!.includes(t)).length * 2
+    }
+
+    // Anti-fee-sniping (+2 match, -1 mismatch)
+    if (p.antiFeeSniping !== undefined) {
+      if (features.hasAntiFeeSniping === p.antiFeeSniping) s += 2
+      else s -= 1
+    }
+
+    // Fee rounding
+    if (p.roundFee && features.feeRateRound) s += 1.5
+
+    // Change position
+    if (p.changePos && features.changePosition !== 'unknown') {
+      if (p.changePos === features.changePosition) s += 1
+      else s -= 0.5
+    }
+
+    // CoinJoin
+    if (p.coinJoin && features.isLikelyCoinJoin) s += 4
+    if (p.coinJoin && !features.isLikelyCoinJoin) s -= 2
+
+    // P2PKH bonus for legacy
+    if (p.id === 'legacy' && features.scriptTypes.every(t => t === 'p2pkh')) s += 3
+
+    // Sigmoid confidence
+    const confidence = 1 / (1 + Math.exp(-s / 3))
+
+    return { wallet: p.id, score: s, confidence }
+  }).sort((a, b) => b.score - a.score)
+}
+
 export function fingerprintTransaction(tx: Transaction): WalletFingerprint {
-  const bip69 = isBip69Ordered(tx)
+  const features = extractFeatures(tx)
+  const scores = scoreWallets(features)
 
-  // Script types
-  const inputTypes = tx.inputs.map(i => detectScriptType(i.address))
-  const outputTypes = tx.outputs.map(o => detectScriptType(o.address))
-  const allTypes = new Set([...inputTypes, ...outputTypes])
-  const mixedScriptTypes = allTypes.size > 1 &&
-    // Exclude 'unknown' from the count
-    [...allTypes].filter(t => t !== 'unknown').length > 1
-
-  // Change position
-  const change = detectChangeOutput(tx)
-  let changePosition: WalletFingerprint['changePosition'] = 'unknown'
-  if (change.changeIndex === 0) changePosition = 'first'
-  else if (change.changeIndex === tx.outputs.length - 1) changePosition = 'last'
-
-  // Ordering
-  const inputOrdering: WalletFingerprint['inputOrdering'] = bip69.inputs ? 'bip69' : 'random'
-  const outputOrdering: WalletFingerprint['outputOrdering'] = bip69.outputs ? 'bip69' : 'random'
-
-  // Score wallets based on features
-  const scores = scoreWallets(tx, {
-    inputOrdering,
-    outputOrdering,
-    mixedScriptTypes,
-    changePosition,
-    inputTypes,
-    outputTypes,
-  })
-
-  // Anonymity reduction: entropy of the wallet probability distribution
-  // If one wallet is very likely, the anonymity set shrinks
-  const totalConfidence = scores.reduce((s, w) => s + w.confidence, 0)
-  const probs = totalConfidence > 0
-    ? scores.map(w => w.confidence / totalConfidence)
+  const totalConf = scores.reduce((s, w) => s + w.confidence, 0)
+  const probs = totalConf > 0
+    ? scores.map(w => w.confidence / totalConf)
     : scores.map(() => 1 / scores.length)
 
-  // H(wallet) for uniform distribution over all wallets
-  const maxEntropy = Math.log2(scores.length)
-  // H(wallet | fingerprint) — actual entropy given the fingerprint
-  const actualEntropy = shannonEntropy(probs)
-  // Information leaked = max - actual
-  const anonymityReduction = Math.max(0, maxEntropy - actualEntropy)
+  const maxH = Math.log2(scores.length)
+  const actualH = shannonEntropy(probs)
 
-  return {
-    inputOrdering,
-    outputOrdering,
-    scriptTypes: { inputs: inputTypes, outputs: outputTypes },
-    mixedScriptTypes,
-    changePosition,
-    scores,
-    anonymityReduction,
-  }
-}
-
-interface Features {
-  inputOrdering: string
-  outputOrdering: string
-  mixedScriptTypes: boolean
-  changePosition: string
-  inputTypes: ScriptType[]
-  outputTypes: ScriptType[]
+  return { features, scores, anonymityReduction: Math.max(0, maxH - actualH) }
 }
 
 /**
- * Score known wallet software against observed features.
- *
- * Wallet signatures compiled from:
- * - https://ishaana.com/blog/wallet_fingerprinting/
- * - https://en.bitcoin.it/wiki/Privacy
- * - Direct testing of wallet software
+ * Aggregate fingerprint across multiple transactions.
+ * Consistent features boost confidence significantly.
  */
-function scoreWallets(tx: Transaction, features: Features): WalletFingerprint['scores'] {
-  const wallets: { wallet: string; confidence: number }[] = []
+export function aggregateFingerprints(txs: Transaction[]): WalletFingerprint | null {
+  if (txs.length === 0) return null
+  if (txs.length === 1) return fingerprintTransaction(txs[0])
 
-  // Bitcoin Core (0.19+): random ordering, P2WPKH/P2TR, low-R sigs, anti-fee-sniping nLockTime
-  let coreScore = 0
-  if (features.inputOrdering === 'random') coreScore += 0.2
-  if (features.outputOrdering === 'random') coreScore += 0.2
-  if (!features.mixedScriptTypes) coreScore += 0.15
-  if (features.inputTypes.every(t => t === 'p2wpkh' || t === 'p2tr')) coreScore += 0.15
-  if (features.changePosition === 'random' || features.changePosition === 'unknown') coreScore += 0.1
-  wallets.push({ wallet: 'bitcoin-core', confidence: Math.min(coreScore, 1) })
+  const allFeatures = txs.map(extractFeatures)
+  const primary = fingerprintTransaction(txs[0])
 
-  // Electrum: BIP-69, P2WPKH, round fee/vB
-  let electrumScore = 0
-  if (features.inputOrdering === 'bip69') electrumScore += 0.3
-  if (features.outputOrdering === 'bip69') electrumScore += 0.3
-  if (features.inputTypes.every(t => t === 'p2wpkh')) electrumScore += 0.1
-  wallets.push({ wallet: 'electrum', confidence: Math.min(electrumScore, 1) })
+  // Count consistency
+  const bip69Pct = allFeatures.filter(f => f.inputOrdering === 'bip69').length / txs.length
+  const afsCount = allFeatures.filter(f => f.hasAntiFeeSniping).length / txs.length
+  const roundFeePct = allFeatures.filter(f => f.feeRateRound).length / txs.length
 
-  // Wasabi: P2WPKH, random ordering, CoinJoin structure
-  let wasabiScore = 0
-  if (features.inputOrdering === 'random') wasabiScore += 0.15
-  if (features.outputOrdering === 'random') wasabiScore += 0.15
-  if (tx.inputs.length > 2 && tx.outputs.length > 4) wasabiScore += 0.3 // CoinJoin-like
-  if (features.inputTypes.every(t => t === 'p2wpkh')) wasabiScore += 0.1
-  wallets.push({ wallet: 'wasabi', confidence: Math.min(wasabiScore, 1) })
+  const boosted = primary.scores.map(s => {
+    let boost = 0
+    const p = PROFILES.find(pr => pr.id === s.wallet)
+    if (!p) return s
 
-  // Mobile (Blue Wallet, Muun, etc.): P2SH-P2WPKH or P2WPKH, change last
-  let mobileScore = 0
-  if (features.changePosition === 'last') mobileScore += 0.3
-  if (features.inputTypes.some(t => t === 'p2sh')) mobileScore += 0.2
-  wallets.push({ wallet: 'mobile-wallet', confidence: Math.min(mobileScore, 1) })
+    if (p.ordering === 'bip69' && bip69Pct > 0.8) boost += 2
+    if (p.antiFeeSniping && afsCount > 0.7) boost += 1.5
+    if (p.roundFee && roundFeePct > 0.7) boost += 1
 
-  // Legacy wallet: P2PKH, no SegWit
-  let legacyScore = 0
-  if (features.inputTypes.every(t => t === 'p2pkh')) legacyScore += 0.5
-  if (features.outputTypes.every(t => t === 'p2pkh')) legacyScore += 0.3
-  wallets.push({ wallet: 'legacy', confidence: Math.min(legacyScore, 1) })
+    const newScore = s.score + boost
+    return { wallet: s.wallet, score: newScore, confidence: 1 / (1 + Math.exp(-newScore / 3)) }
+  }).sort((a, b) => b.score - a.score)
 
-  return wallets.sort((a, b) => b.confidence - a.confidence)
+  const totalConf = boosted.reduce((s, w) => s + w.confidence, 0)
+  const probs = totalConf > 0 ? boosted.map(w => w.confidence / totalConf) : boosted.map(() => 1 / boosted.length)
+  const maxH = Math.log2(boosted.length)
+
+  return {
+    features: primary.features,
+    scores: boosted,
+    anonymityReduction: Math.max(0, maxH - shannonEntropy(probs)),
+  }
 }

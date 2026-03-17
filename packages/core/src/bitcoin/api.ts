@@ -31,15 +31,27 @@ interface RawUtxo {
 // Simple in-memory cache to avoid re-fetching
 const cache = new Map<string, unknown>()
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJson<T>(url: string, retries = 3): Promise<T> {
   if (cache.has(url)) return cache.get(url) as T
 
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`API ${res.status}: ${url}`)
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const res = await fetch(url)
 
-  const data = await res.json() as T
-  cache.set(url, data)
-  return data
+    if (res.status === 429 || res.status === 503) {
+      // Rate limited or server busy — back off exponentially
+      const delay = Math.min(1000 * Math.pow(2, attempt), 10000)
+      await new Promise(r => setTimeout(r, delay))
+      continue
+    }
+
+    if (!res.ok) throw new Error(`API ${res.status}: ${url}`)
+
+    const data = await res.json() as T
+    cache.set(url, data)
+    return data
+  }
+
+  throw new Error(`API rate limited after ${retries} retries: ${url}`)
 }
 
 /**

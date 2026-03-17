@@ -14,10 +14,12 @@
 
 import { getAddressTransactions, getAddressSummary } from './bitcoin/api.js'
 import { buildCoSpendGraph, findClusters, clusterStats, privacyExposure, findBridgeTransactions } from './graph/cospend.js'
-import { fingerprintTransaction } from './fingerprint/wallet.js'
+import { analyseClusterSpectrum } from './graph/spectral.js'
+import { fingerprintTransaction, aggregateFingerprints } from './fingerprint/wallet.js'
 import { amountEntropy, amountCorrelation } from './entropy/amount.js'
 import { analyseTimingPrivacy } from './entropy/timing.js'
-import { composedPrivacyScore, shannonEntropy, anonymitySetSize } from './entropy/shannon.js'
+import { createMass, fuseEvidence, HEURISTIC_RELIABILITY, MAX_LEAKAGE_BITS } from './entropy/evidence.js'
+import { anonymitySetSize } from './entropy/shannon.js'
 import type { Transaction } from './graph/cospend.js'
 import type { WalletFingerprint } from './fingerprint/wallet.js'
 import type { TimingAnalysis } from './entropy/timing.js'
@@ -28,6 +30,8 @@ export interface PrivacyReport {
     totalScore: number          // bits — total information leakage
     anonymitySet: number        // effective anonymity set (2^(maxH - score))
     riskLevel: 'low' | 'medium' | 'high' | 'critical'
+    dsBeliefExposed: number     // Dempster-Shafer Bel(EXPOSED) — fused evidence
+    dsConflict: number          // conflict mass K between heuristics
   }
   breakdown: {
     source: string
@@ -87,9 +91,17 @@ export async function analyseAddress(address: string, maxTxs: number = 100): Pro
     bridges = findBridgeTransactions(graph, clusterAddrs)
   }
 
-  // 2. Wallet fingerprinting (use the most recent transaction)
-  const latestTx = transactions[0]
-  const fingerprint = latestTx ? fingerprintTransaction(latestTx) : null
+  // 1b. Spectral analysis on largest cluster
+  let spectral = null
+  if (exposure.exposedAddresses >= 4) {
+    const clusterAddrs = [...clusters.entries()]
+      .filter(([, cid]) => exposure.clusterIds.has(cid))
+      .map(([addr]) => addr)
+    spectral = analyseClusterSpectrum(graph, clusterAddrs)
+  }
+
+  // 2. Wallet fingerprinting (aggregate across multiple txs for stronger signal)
+  const fingerprint = transactions.length > 0 ? aggregateFingerprints(transactions) : null
   const fpLeakage = fingerprint?.anonymityReduction ?? 0
 
   // 3. Amount analysis (average across all transactions)
@@ -117,7 +129,11 @@ export async function analyseAddress(address: string, maxTxs: number = 100): Pro
   // 5. Timing analysis
   const timing = analyseTimingPrivacy(transactions)
 
-  // Compose total score
+  // Compose via Dempster-Shafer evidence fusion
+  // Each heuristic produces a mass function; Dempster's rule fuses them.
+  // This handles conflicting evidence properly — if clustering says "exposed"
+  // but timing says "private", basic addition would sum both leakages.
+  // Dempster-Shafer detects the conflict and adjusts.
   const leakages = [
     { source: 'clustering', bits: clusterLeakage },
     { source: 'wallet-fingerprint', bits: fpLeakage },
@@ -126,22 +142,39 @@ export async function analyseAddress(address: string, maxTxs: number = 100): Pro
     { source: 'timing', bits: timing.totalLeakage },
   ].filter(l => l.bits > 0)
 
-  const score = composedPrivacyScore(leakages)
+  const masses = leakages.map(l => createMass(
+    l.bits,
+    MAX_LEAKAGE_BITS[l.source] ?? 5,
+    HEURISTIC_RELIABILITY[l.source] ?? 0.5,
+    l.source,
+  ))
 
-  // Risk level
+  const fused = fuseEvidence(masses)
+
+  // Convert Bel(EXPOSED) to bits: score = Bel * max_theoretical_leakage
+  // max_theoretical = sum of all max leakages
+  const maxTheoreticalBits = leakages.reduce((s, l) => s + (MAX_LEAKAGE_BITS[l.source] ?? 5), 0)
+  const totalScore = fused.belief * maxTheoreticalBits
+
+  // Also keep the raw leakage breakdown for display
+  const sortedLeakages = [...leakages].sort((a, b) => b.bits - a.bits)
+
+  // Risk level (calibrated to Dempster-Shafer output)
   let riskLevel: PrivacyReport['summary']['riskLevel'] = 'low'
-  if (score.total > 8) riskLevel = 'critical'
-  else if (score.total > 5) riskLevel = 'high'
-  else if (score.total > 2) riskLevel = 'medium'
+  if (fused.belief > 0.7) riskLevel = 'critical'
+  else if (fused.belief > 0.5) riskLevel = 'high'
+  else if (fused.belief > 0.3) riskLevel = 'medium'
 
   return {
     address,
     summary: {
-      totalScore: Math.round(score.total * 100) / 100,
-      anonymitySet: Math.round(anonymitySetSize(Math.max(0, 10 - score.total))),
+      totalScore: Math.round(totalScore * 100) / 100,
+      anonymitySet: Math.round(anonymitySetSize(Math.max(0, 10 - totalScore))),
       riskLevel,
+      dsBeliefExposed: Math.round(fused.belief * 1000) / 1000,
+      dsConflict: Math.round(fused.conflict * 1000) / 1000,
     },
-    breakdown: score.breakdown.map(b => ({
+    breakdown: sortedLeakages.map(b => ({
       source: b.source,
       bits: Math.round(b.bits * 100) / 100,
       detail: detailForSource(b.source, {
@@ -173,7 +206,7 @@ export async function analyseAddress(address: string, maxTxs: number = 100): Pro
 function emptyReport(address: string): PrivacyReport {
   return {
     address,
-    summary: { totalScore: 0, anonymitySet: 1024, riskLevel: 'low' },
+    summary: { totalScore: 0, anonymitySet: 1024, riskLevel: 'low', dsBeliefExposed: 0, dsConflict: 0 },
     breakdown: [],
     clustering: { clusterSize: 0, totalClusters: 0, bridges: [] },
     fingerprint: null,

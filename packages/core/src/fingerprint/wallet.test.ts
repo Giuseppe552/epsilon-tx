@@ -119,7 +119,7 @@ describe('fingerprintTransaction', () => {
       ],
     }))
 
-    expect(fp.mixedScriptTypes).toBe(true)
+    expect(fp.features.mixedScriptTypes).toBe(true)
   })
 
   it('anonymityReduction is non-negative', () => {

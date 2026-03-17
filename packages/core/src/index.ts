@@ -29,8 +29,18 @@ export {
   detectScriptType,
   detectChangeOutput,
   fingerprintTransaction,
+  aggregateFingerprints,
+  extractFeatures,
 } from './fingerprint/wallet.js'
-export type { ScriptType, WalletFingerprint } from './fingerprint/wallet.js'
+export type { ScriptType, WalletFingerprint, TransactionFeatures } from './fingerprint/wallet.js'
+
+// Evidence fusion — Dempster-Shafer (1967, 1976)
+export { createMass, combine, fuseEvidence, HEURISTIC_RELIABILITY, MAX_LEAKAGE_BITS } from './entropy/evidence.js'
+export type { MassFunction, FusedResult } from './entropy/evidence.js'
+
+// Spectral graph analysis — Fiedler (1973), Von Luxburg (2007)
+export { analyseClusterSpectrum } from './graph/spectral.js'
+export type { SpectralAnalysis } from './graph/spectral.js'
 
 // Timing analysis
 export { analyseTimingPrivacy } from './entropy/timing.js'

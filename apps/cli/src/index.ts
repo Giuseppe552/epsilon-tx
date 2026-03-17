@@ -114,8 +114,8 @@ function printReport(r: PrivacyReport) {
     if (top && top.confidence > 0.2) {
       w(`  wallet fingerprint:\n`)
       w(`    likely:        ${top.wallet} (${(top.confidence * 100).toFixed(0)}%)\n`)
-      w(`    script types:  ${[...new Set(r.fingerprint.scriptTypes.inputs)].join(', ')}\n`)
-      w(`    ordering:      inputs=${r.fingerprint.inputOrdering}, outputs=${r.fingerprint.outputOrdering}\n`)
+      w(`    script types:  ${r.fingerprint.features.scriptTypes.join(', ')}\n`)
+      w(`    ordering:      inputs=${r.fingerprint.features.inputOrdering}, outputs=${r.fingerprint.features.outputOrdering}\n`)
       w(`    info leaked:   ${r.fingerprint.anonymityReduction.toFixed(2)} bits\n`)
       w('\n')
     }

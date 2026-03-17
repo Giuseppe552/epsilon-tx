@@ -27,6 +27,12 @@ export interface Transaction {
   fee: number
   timestamp: number
   blockHeight: number
+  // Extended fields for fingerprinting (optional — not all APIs return these)
+  locktime?: number       // nLockTime (0 or block height for anti-fee-sniping)
+  version?: number        // tx version (1 or 2)
+  size?: number           // raw tx size in bytes
+  vsize?: number          // virtual size (weight / 4) for fee rate calculation
+  weight?: number         // segwit weight units
 }
 
 export interface CoSpendGraph {
