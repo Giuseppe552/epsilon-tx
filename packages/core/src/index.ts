@@ -65,6 +65,10 @@ export type { LightningNode, LightningChannel, RouteHop, RoutePrivacy, ParetoPoi
 export { classifyTransaction, extractClassifierFeatures } from './adversarial/classifier.js'
 export type { ClassifierFeatures, TxClassification, ClassificationResult, Perturbation } from './adversarial/classifier.js'
 
+// Adversary models — Narayanan & Möser (2017)
+export { applyAdversaryModel, ADVERSARY_MODELS } from './entropy/adversary.js'
+export type { AdversaryModel, AdversaryWeights } from './entropy/adversary.js'
+
 // Cross-chain composition — Dwork (2006), Kamath (2020), P2C2T (2024)
 export { analyseCrossChain, composePrivacy } from './crosschain/composition.js'
 export type { ChainHop, CrossChainAnalysis } from './crosschain/composition.js'

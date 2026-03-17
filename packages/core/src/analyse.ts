@@ -22,6 +22,9 @@ import { amountEntropy, amountCorrelation } from './entropy/amount.js'
 import { analyseTimingPrivacy } from './entropy/timing.js'
 import { createMass, fuseEvidence, HEURISTIC_RELIABILITY, MAX_LEAKAGE_BITS } from './entropy/evidence.js'
 import { anonymitySetSize } from './entropy/shannon.js'
+import { computeBoltzmann } from './coinjoin/boltzmann.js'
+import { classifyTransaction } from './adversarial/classifier.js'
+import { applyAdversaryModel, type AdversaryModel } from './entropy/adversary.js'
 import type { Transaction } from './graph/cospend.js'
 import type { WalletFingerprint } from './fingerprint/wallet.js'
 import type { TimingAnalysis } from './entropy/timing.js'
@@ -52,6 +55,14 @@ export interface PrivacyReport {
     changeDetectedCount: number
     correlations: number
   }
+  coinjoinDetected: boolean
+  coinjoinEntropy: number | null
+  classification: { label: string; confidence: number; suspiciousness: number } | null
+  adversaryModel: {
+    model: string
+    totalEffective: number
+    topThreats: { source: string; effective: number }[]
+  } | null
   recommendations: Recommendation[]
   expandedAddresses: number
   txCount: number
@@ -68,6 +79,7 @@ export async function analyseAddress(
   address: string,
   maxTxs: number = 100,
   expandDepth: number = 0,
+  adversary: AdversaryModel = 'exchange',
 ): Promise<PrivacyReport> {
   // Fetch transaction history
   let transactions = await getAddressTransactions(address, maxTxs)
@@ -145,6 +157,29 @@ export async function analyseAddress(
   // 5. Timing analysis
   const timing = analyseTimingPrivacy(transactions)
 
+  // 6. CoinJoin detection on the most CoinJoin-like transaction
+  let coinjoinDetected = false
+  let coinjoinEntropy: number | null = null
+  const likelyCj = transactions.find(tx => tx.inputs.length >= 3 && tx.outputs.length >= 3)
+  if (likelyCj) {
+    const boltzmann = computeBoltzmann(likelyCj)
+    if (boltzmann.isLikelyCoinJoin) {
+      coinjoinDetected = true
+      coinjoinEntropy = boltzmann.entropy
+    }
+  }
+
+  // 7. Adversarial classification on most recent transaction
+  let classification: PrivacyReport['classification'] = null
+  if (transactions.length > 0) {
+    const classResult = classifyTransaction(transactions[0])
+    classification = {
+      label: classResult.classification,
+      confidence: classResult.confidence,
+      suspiciousness: classResult.suspiciousnessScore,
+    }
+  }
+
   // Compose via Dempster-Shafer evidence fusion
   // Each heuristic produces a mass function; Dempster's rule fuses them.
   // This handles conflicting evidence properly — if clustering says "exposed"
@@ -176,6 +211,11 @@ export async function analyseAddress(
   const sortedLeakages = [...leakages].sort((a, b) => b.bits - a.bits)
 
   // Risk level (calibrated to Dempster-Shafer output)
+  // Apply adversary model
+  const rawLeakageMap: Record<string, number> = {}
+  for (const l of leakages) rawLeakageMap[l.source] = l.bits
+  const adversaryResult = applyAdversaryModel(rawLeakageMap, adversary)
+
   let riskLevel: PrivacyReport['summary']['riskLevel'] = 'low'
   if (fused.belief > 0.7) riskLevel = 'critical'
   else if (fused.belief > 0.5) riskLevel = 'high'
@@ -214,6 +254,14 @@ export async function analyseAddress(
       changeDetectedCount: changeDetected,
       correlations: correlations.length,
     },
+    coinjoinDetected,
+    coinjoinEntropy,
+    classification,
+    adversaryModel: {
+      model: adversary,
+      totalEffective: adversaryResult.totalEffective,
+      topThreats: adversaryResult.weighted.slice(0, 3).map(w => ({ source: w.source, effective: w.effective })),
+    },
     recommendations: generateRecommendations(
       fingerprint, timing, changeDetected, correlations.length, exposure.exposedAddresses,
     ),
@@ -232,6 +280,10 @@ function emptyReport(address: string): PrivacyReport {
     fingerprint: null,
     timing: null,
     amountAnalysis: { avgEntropy: 0, changeDetectedCount: 0, correlations: 0 },
+    coinjoinDetected: false,
+    coinjoinEntropy: null,
+    classification: null,
+    adversaryModel: null,
     recommendations: [],
     expandedAddresses: 0,
     txCount: 0,

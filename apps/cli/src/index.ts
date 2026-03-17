@@ -93,10 +93,11 @@ async function cmdAnalyse() {
 
   const maxTxs = param('max', 100)
   const expandDepth = param('expand', 0)
+  const adversary = (strParam('adversary') ?? 'exchange') as 'casual' | 'exchange' | 'law-enforcement' | 'nation-state'
 
-  progress(`analysing ${addr} (max ${maxTxs} txs${expandDepth > 0 ? `, expand ${expandDepth}` : ''})`)
+  progress(`analysing ${addr} (max ${maxTxs} txs, adversary=${adversary}${expandDepth > 0 ? `, expand ${expandDepth}` : ''})`)
 
-  const report = await analyseAddress(addr, maxTxs, expandDepth)
+  const report = await analyseAddress(addr, maxTxs, expandDepth, adversary)
 
   if (jsonFlag) { out(report); return }
 
@@ -447,6 +448,25 @@ function printAnalysisReport(r: PrivacyReport) {
     w('\n\n')
   }
 
+  if (r.classification) {
+    w(`  classification: ${r.classification.label} (${(r.classification.confidence * 100).toFixed(0)}%)`)
+    if (r.classification.suspiciousness > 0.1) w(` · suspiciousness ${(r.classification.suspiciousness * 100).toFixed(0)}%`)
+    w('\n')
+  }
+
+  if (r.coinjoinDetected) {
+    w(`  coinjoin: \x1b[32mdetected\x1b[0m · entropy ${r.coinjoinEntropy?.toFixed(2)} bits\n`)
+  }
+
+  if (r.adversaryModel) {
+    w(`  adversary: ${r.adversaryModel.model} · effective leakage ${r.adversaryModel.totalEffective} bits\n`)
+    if (r.adversaryModel.topThreats.length > 0) {
+      w(`    top threats: ${r.adversaryModel.topThreats.map(t => `${t.source} (${t.effective.toFixed(1)}b)`).join(', ')}\n`)
+    }
+  }
+
+  w('\n')
+
   if (r.recommendations.length > 0) {
     w(`  fix:\n`)
     for (const rec of r.recommendations) {
@@ -471,6 +491,7 @@ const HELP = `ε-tx — privacy analysis for cryptocurrency transactions
   analyse <address>           Bitcoin address privacy score
     --max <n>                 max transactions (default 100)
     --expand <n>              follow co-spend graph N hops
+    --adversary <model>       casual|exchange|law-enforcement|nation-state
     --json                    raw JSON only
 
   coinjoin <txid>             Boltzmann entropy of a transaction
