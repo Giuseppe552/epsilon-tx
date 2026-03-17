@@ -65,6 +65,14 @@ export type { LightningNode, LightningChannel, RouteHop, RoutePrivacy, ParetoPoi
 export { classifyTransaction, extractClassifierFeatures } from './adversarial/classifier.js'
 export type { ClassifierFeatures, TxClassification, ClassificationResult, Perturbation } from './adversarial/classifier.js'
 
+// Cross-chain composition — Dwork (2006), Kamath (2020), P2C2T (2024)
+export { analyseCrossChain, composePrivacy } from './crosschain/composition.js'
+export type { ChainHop, CrossChainAnalysis } from './crosschain/composition.js'
+
+// Network-level privacy — Biryukov (2014), CVE-2025-43968
+export { analyseNetworkPrivacy } from './entropy/network.js'
+export type { NetworkPrivacyInput, NetworkPrivacy } from './entropy/network.js'
+
 // Unified analysis
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
