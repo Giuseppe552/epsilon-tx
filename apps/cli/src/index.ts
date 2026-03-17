@@ -83,6 +83,7 @@ function printReport(r: PrivacyReport) {
 
   w(`  privacy score: ${color}${r.summary.totalScore} bits${reset} (${r.summary.riskLevel})\n`)
   w(`  anonymity set: ~${r.summary.anonymitySet}\n`)
+  w(`  evidence:      Bel(exposed)=${r.summary.dsBeliefExposed}, conflict K=${r.summary.dsConflict}\n`)
   w('\n')
 
   // Breakdown

@@ -1,6 +1,10 @@
 /**
  * Amount-based privacy analysis.
  *
+ * Reference: Bitcoin Wiki — Privacy page, "Amount correlation" section.
+ * Reference: Androulaki et al. (2013). "Evaluating User Privacy in Bitcoin."
+ *            Financial Cryptography. §4 — change address heuristics.
+ *
  * Transaction amounts leak information in several ways:
  *
  * 1. Unique amounts: if you send exactly 0.03471892 BTC, that amount

@@ -4,6 +4,8 @@
  * Attack surfaces:
  * 1. Timezone inference: activity peaks during local daytime hours.
  *    Fitting a circadian model estimates timezone within ±1 hour.
+ *    Reference: Biryukov et al. (2014) — "Deanonymisation of Clients
+ *    in Bitcoin P2P Network." CCS. §4.2 timing analysis.
  *
  * 2. Periodicity detection: regular transactions (DCA every Monday,
  *    payroll every 2 weeks) create autocorrelation at specific lags.
