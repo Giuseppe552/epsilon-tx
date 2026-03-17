@@ -50,6 +50,13 @@ export type { TimingAnalysis } from './entropy/timing.js'
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
 
+// Recommendations — Ishaana Misra (2024), Bitcoin Wiki Privacy
+export { generateRecommendations } from './fingerprint/recommendations.js'
+export type { Recommendation } from './fingerprint/recommendations.js'
+
+// Graph expansion — Meiklejohn et al. (2013) §3
+export { expandGraph } from './bitcoin/expand.js'
+
 // Bitcoin API
 export {
   getAddressTransactions,

@@ -13,9 +13,11 @@
  */
 
 import { getAddressTransactions, getAddressSummary } from './bitcoin/api.js'
+import { expandGraph } from './bitcoin/expand.js'
 import { buildCoSpendGraph, findClusters, clusterStats, privacyExposure, findBridgeTransactions } from './graph/cospend.js'
 import { analyseClusterSpectrum } from './graph/spectral.js'
 import { fingerprintTransaction, aggregateFingerprints } from './fingerprint/wallet.js'
+import { generateRecommendations, type Recommendation } from './fingerprint/recommendations.js'
 import { amountEntropy, amountCorrelation } from './entropy/amount.js'
 import { analyseTimingPrivacy } from './entropy/timing.js'
 import { createMass, fuseEvidence, HEURISTIC_RELIABILITY, MAX_LEAKAGE_BITS } from './entropy/evidence.js'
@@ -50,6 +52,8 @@ export interface PrivacyReport {
     changeDetectedCount: number
     correlations: number
   }
+  recommendations: Recommendation[]
+  expandedAddresses: number
   txCount: number
   fetchedAt: string
 }
@@ -60,10 +64,22 @@ export interface PrivacyReport {
  * @param address - Bitcoin address (any format)
  * @param maxTxs - Maximum transactions to fetch (default 100)
  */
-export async function analyseAddress(address: string, maxTxs: number = 100): Promise<PrivacyReport> {
+export async function analyseAddress(
+  address: string,
+  maxTxs: number = 100,
+  expandDepth: number = 0,
+): Promise<PrivacyReport> {
   // Fetch transaction history
-  const transactions = await getAddressTransactions(address, maxTxs)
+  let transactions = await getAddressTransactions(address, maxTxs)
   const summary = await getAddressSummary(address)
+  let expandedCount = 0
+
+  // Recursive expansion: follow co-spend addresses outward
+  if (expandDepth > 0 && transactions.length > 0) {
+    const expanded = await expandGraph(transactions, address, expandDepth, 20, 25)
+    transactions = expanded.transactions
+    expandedCount = expanded.expandedAddresses.length
+  }
 
   if (transactions.length === 0) {
     return emptyReport(address)
@@ -198,6 +214,10 @@ export async function analyseAddress(address: string, maxTxs: number = 100): Pro
       changeDetectedCount: changeDetected,
       correlations: correlations.length,
     },
+    recommendations: generateRecommendations(
+      fingerprint, timing, changeDetected, correlations.length, exposure.exposedAddresses,
+    ),
+    expandedAddresses: expandedCount,
     txCount: transactions.length,
     fetchedAt: new Date().toISOString(),
   }
@@ -212,6 +232,8 @@ function emptyReport(address: string): PrivacyReport {
     fingerprint: null,
     timing: null,
     amountAnalysis: { avgEntropy: 0, changeDetectedCount: 0, correlations: 0 },
+    recommendations: [],
+    expandedAddresses: 0,
     txCount: 0,
     fetchedAt: new Date().toISOString(),
   }

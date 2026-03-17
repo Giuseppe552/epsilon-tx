@@ -15,19 +15,22 @@ const args = process.argv.slice(2)
 const command = args[0]
 const target = args[1]
 const jsonFlag = args.includes('--json')
+const expandIdx = args.indexOf('--expand')
+const expandDepth = expandIdx >= 0 ? parseInt(args[expandIdx + 1], 10) || 1 : 0
 const maxIdx = args.indexOf('--max')
 const maxTxs = maxIdx >= 0 ? parseInt(args[maxIdx + 1], 10) || 100 : 100
 
 const HELP = `ε-tx — privacy analysis for cryptocurrency transactions
 
 usage:
-  etx analyse <address>              analyse a Bitcoin address
-  etx analyse <address> --json       raw JSON output
-  etx analyse <address> --max 200    fetch up to 200 transactions
+  etx analyse <address>                analyse a Bitcoin address
+  etx analyse <address> --json         raw JSON output
+  etx analyse <address> --max 200      fetch up to 200 transactions
+  etx analyse <address> --expand 1     follow co-spend addresses 1 hop out
 
 example:
   etx analyse bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
-  etx analyse 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa --json | jq .summary
+  etx analyse 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa --expand 1 --json | jq .recommendations
 `
 
 async function main() {
@@ -42,10 +45,10 @@ async function main() {
       process.exit(1)
     }
 
-    process.stderr.write(`[*] analysing ${target} (max ${maxTxs} txs)\n`)
+    process.stderr.write(`[*] analysing ${target} (max ${maxTxs} txs${expandDepth > 0 ? `, expand depth ${expandDepth}` : ''})\n`)
 
     try {
-      const report = await analyseAddress(target, maxTxs)
+      const report = await analyseAddress(target, maxTxs, expandDepth)
 
       if (jsonFlag) {
         process.stdout.write(JSON.stringify(report, null, 2) + '\n')
@@ -131,8 +134,11 @@ function printReport(r: PrivacyReport) {
       w(`    timezone est:   UTC${tz >= 0 ? '+' : ''}${tz} (${(r.timing.timezoneConfidence * 100).toFixed(0)}% confidence)\n`)
     }
     w(`    activity:       ${r.timing.activityWindow.startHour}:00 - ${r.timing.activityWindow.endHour}:00 UTC\n`)
+    if (r.timing.isScheduled) {
+      w(`    scheduled:      \x1b[33myes\x1b[0m (KS test rejected random timing)\n`)
+    }
     if (r.timing.periodicityLags.length > 0) {
-      w(`    patterns:       ${r.timing.periodicityLags.map((l: number) => l >= 168 ? `${l / 168}w` : l >= 24 ? `${l / 24}d` : `${l}h`).join(', ')}\n`)
+      w(`    patterns:       ${r.timing.periodicityLags.map(l => `${l.label} (${l.strength.toFixed(1)}x)`).join(', ')}\n`)
     }
     w('\n')
   }
@@ -146,6 +152,24 @@ function printReport(r: PrivacyReport) {
       w(`    correlations:  ${r.amountAnalysis.correlations} near-match pairs\n`)
     }
     w('\n')
+  }
+
+  // Recommendations
+  if (r.recommendations.length > 0) {
+    w(`  recommendations:\n`)
+    for (const rec of r.recommendations.slice(0, 5)) {
+      const icon = rec.priority === 'high' ? '\x1b[31m!\x1b[0m'
+        : rec.priority === 'medium' ? '\x1b[33m~\x1b[0m'
+        : '\x1b[36m·\x1b[0m'
+      w(`    ${icon} [${rec.source}] ${rec.action}\n`)
+      w(`      saves ~${rec.estimatedSavings.toFixed(1)} bits\n`)
+    }
+    w('\n')
+  }
+
+  // Expansion info
+  if (r.expandedAddresses > 0) {
+    w(`  graph expansion: ${r.expandedAddresses} addresses followed\n\n`)
   }
 
   // JSON output to stdout for piping
