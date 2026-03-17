@@ -61,6 +61,10 @@ export type { RingMember, RingAnalysis, OptimalRing } from './monero/ring.js'
 export { computeSenderAnonymity, computeTimingLeakage, computeBalanceProbeResistance, analyseRoutePrivacy, paretoFrontier } from './lightning/routing.js'
 export type { LightningNode, LightningChannel, RouteHop, RoutePrivacy, ParetoPoint } from './lightning/routing.js'
 
+// Adversarial classification — Alarab et al. (2024)
+export { classifyTransaction, extractClassifierFeatures } from './adversarial/classifier.js'
+export type { ClassifierFeatures, TxClassification, ClassificationResult, Perturbation } from './adversarial/classifier.js'
+
 // Unified analysis
 export { analyseAddress } from './analyse.js'
 export type { PrivacyReport } from './analyse.js'
