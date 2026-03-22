@@ -85,6 +85,10 @@ export type { PrivacyReport } from './analyse.js'
 export { generateRecommendations } from './fingerprint/recommendations.js'
 export type { Recommendation } from './fingerprint/recommendations.js'
 
+// Batch wallet analysis — Gavenda et al. (ESORICS 2025)
+export { analyseWallet } from './batch/wallet.js'
+export type { BatchOptions, TimelinePoint, WalletReport } from './batch/wallet.js'
+
 // Graph expansion — Meiklejohn et al. (2013) §3
 export { expandGraph } from './bitcoin/expand.js'
 
