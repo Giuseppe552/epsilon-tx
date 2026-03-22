@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Giuseppe552/epsilon-tx/actions/workflows/ci.yml/badge.svg)](https://github.com/Giuseppe552/epsilon-tx/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests: 170](https://img.shields.io/badge/tests-170_passing-brightgreen)]()
+[![Tests: 182](https://img.shields.io/badge/tests-182_passing-brightgreen)]()
 
 Privacy analysis for cryptocurrency transactions. Computes information-theoretic bounds on what a blockchain observer can learn. Bitcoin, Monero, Lightning, cross-chain.
 
@@ -16,6 +16,8 @@ npm install && npm run build
 ```sh
 etx analyse bc1q...                                        # Bitcoin address
 etx analyse bc1q... --adversary law-enforcement             # who's watching?
+etx batch bc1q... bc1p... --timeline                        # full wallet privacy history
+etx batch bc1q... --csv > privacy.csv                       # plot privacy over time
 etx coinjoin abc123...                                      # Boltzmann entropy
 etx classify abc123...                                      # Chainalysis classification
 etx ring abc123... --optimise                                # Monero optimal decoys
@@ -87,16 +89,17 @@ packages/core/
   lightning/     routing privacy, Pareto frontier, mempool.space API
   crosschain/    bridge linking, DP composition, Wormhole/LayerZero API
   adversarial/   surrogate classifier, feature importance, evasion
+  batch/         full wallet history, per-tx privacy timeline, degradation projection
   bitcoin/       Blockstream API (paginated, cached, rate-limited)
 
-apps/cli/        7 commands, input validation, JSON piping
+apps/cli/        8 commands, input validation, JSON piping, CSV export
 ```
 
 ## Develop
 
 ```sh
 npm install && npm run build
-npm test           # 170 tests across 14 files
+npm test           # 182 tests across 15 files
 npm run cli -- analyse <address>
 ```
 
