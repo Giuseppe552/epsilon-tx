@@ -10,6 +10,7 @@
 
 import {
   analyseAddress,
+  analyseWallet,
   computeBoltzmann,
   analysePostMix,
   analyseRing,
@@ -26,6 +27,7 @@ import {
   getTransaction,
   getTransactionRings,
   type PrivacyReport,
+  type WalletReport,
   type NetworkPrivacyInput,
 } from '@etx/core'
 
@@ -391,6 +393,170 @@ async function cmdClassify() {
   out(result)
 }
 
+async function cmdBatch() {
+  // Collect all addresses from args (everything after 'batch' that looks like an address)
+  const addrs: string[] = []
+  for (let i = 1; i < args.length; i++) {
+    if (args[i].startsWith('--')) { i++; continue } // skip flags and their values
+    if (validateBtcAddress(args[i])) addrs.push(args[i])
+  }
+
+  if (addrs.length === 0) die('at least one address required. usage: etx batch <addr1> [addr2] ...')
+
+  const maxTxs = param('max', 0)
+  const expandDepth = param('expand', 0)
+  const adversary = (strParam('adversary') ?? 'exchange') as 'casual' | 'exchange' | 'law-enforcement' | 'nation-state'
+  const csvMode = flag('csv')
+  const timelineMode = flag('timeline') || csvMode
+
+  progress(`batch analysis: ${addrs.length} address${addrs.length > 1 ? 'es' : ''}, adversary=${adversary}`)
+
+  const report = await analyseWallet(addrs, {
+    maxTxsPerAddress: maxTxs,
+    expandDepth,
+    adversary,
+    onProgress: (msg) => progress(msg),
+  })
+
+  if (csvMode) {
+    // CSV timeline for plotting
+    process.stdout.write('txid,timestamp,block_height,direction,score,anonymity_set,delta,delta_source,cluster_size\n')
+    for (const p of report.timeline) {
+      process.stdout.write(`${p.txid},${p.timestamp},${p.blockHeight},${p.direction},${p.score},${p.anonymitySet},${p.delta},${p.deltaSource},${p.clusterSize}\n`)
+    }
+    return
+  }
+
+  if (jsonFlag) { out(report); return }
+
+  printBatchReport(report, timelineMode)
+  out(report)
+}
+
+function printBatchReport(r: WalletReport, showTimeline: boolean) {
+  w('\n')
+  w(`  ε-tx batch privacy analysis\n`)
+  w(`  ${'—'.repeat(50)}\n`)
+  w(`  addresses:     ${r.addresses.length}\n`)
+  w(`  transactions:  ${r.uniqueTxCount}\n`)
+  w(`  time span:     ${r.timeSpan.days} days\n`)
+  w('\n')
+
+  const color = r.summary.currentScore > 6 ? '\x1b[31m'
+    : r.summary.currentScore > 4 ? '\x1b[33m'
+    : '\x1b[32m'
+
+  w(`  current score: ${color}${r.summary.currentScore} bits\x1b[0m\n`)
+  w(`  peak score:    ${r.summary.peakScore} bits (${r.summary.peakTxid.slice(0, 12)}...)\n`)
+  w(`  best score:    ${r.summary.bestScore} bits\n`)
+  w(`  avg score:     ${r.summary.averageScore} bits\n`)
+  w(`  degradation:   ${r.summary.degradationRate > 0 ? '+' : ''}${r.summary.degradationRate} bits/tx\n`)
+
+  if (r.summary.projectedExhaustion !== null) {
+    w(`  projection:    \x1b[33m~${r.summary.projectedExhaustion} txs until anonymity set < 4\x1b[0m\n`)
+  }
+  w('\n')
+
+  if (r.currentBreakdown.length > 0) {
+    w(`  current breakdown:\n`)
+    for (const b of r.currentBreakdown) {
+      w(`    ${b.source.padEnd(22)} ${b.bits.toFixed(2).padStart(5)} bits  ${b.detail}\n`)
+    }
+    w('\n')
+  }
+
+  if (r.worstTransactions.length > 0) {
+    w(`  worst transactions (privacy lost):\n`)
+    for (const t of r.worstTransactions) {
+      if (t.delta <= 0) continue
+      const date = new Date(t.timestamp * 1000).toISOString().slice(0, 10)
+      w(`    \x1b[31m+${t.delta.toFixed(2)}b\x1b[0m  ${t.txid.slice(0, 16)}...  ${date}  ${t.source}\n`)
+    }
+    w('\n')
+  }
+
+  if (r.bestTransactions.length > 0) {
+    const improving = r.bestTransactions.filter(t => t.delta < 0)
+    if (improving.length > 0) {
+      w(`  best transactions (privacy gained):\n`)
+      for (const t of improving) {
+        const date = new Date(t.timestamp * 1000).toISOString().slice(0, 10)
+        w(`    \x1b[32m${t.delta.toFixed(2)}b\x1b[0m  ${t.txid.slice(0, 16)}...  ${date}  ${t.source}\n`)
+      }
+      w('\n')
+    }
+  }
+
+  if (showTimeline && r.timeline.length > 0) {
+    w(`  timeline (${r.timeline.length} points):\n`)
+    w(`    ${'txid'.padEnd(16)}  ${'date'.padEnd(10)}  ${'score'.padStart(6)}  ${'delta'.padStart(7)}  ${'cluster'.padStart(7)}  source\n`)
+    w(`    ${'—'.repeat(70)}\n`)
+
+    // show all points if <50, otherwise sample
+    const points = r.timeline.length <= 50
+      ? r.timeline
+      : sampleTimeline(r.timeline, 50)
+
+    for (const p of points) {
+      const date = p.timestamp > 0 ? new Date(p.timestamp * 1000).toISOString().slice(0, 10) : 'unconfirmed'
+      const deltaStr = p.delta === 0 ? '  0.00'
+        : p.delta > 0 ? `\x1b[31m+${p.delta.toFixed(2)}\x1b[0m`
+        : `\x1b[32m${p.delta.toFixed(2)}\x1b[0m`
+      w(`    ${p.txid.slice(0, 16)}  ${date}  ${p.score.toFixed(2).padStart(6)}  ${deltaStr.padStart(7)}  ${String(p.clusterSize).padStart(7)}  ${p.deltaSource}\n`)
+    }
+    w('\n')
+  }
+
+  if (r.recommendations.length > 0) {
+    w(`  recommendations:\n`)
+    for (const rec of r.recommendations) {
+      const icon = rec.priority === 'high' ? '\x1b[31m!\x1b[0m' : rec.priority === 'medium' ? '\x1b[33m~\x1b[0m' : '\x1b[36m·\x1b[0m'
+      w(`    ${icon} ${rec.action} \x1b[2m(−${rec.estimatedSavings.toFixed(1)}b)\x1b[0m\n`)
+    }
+    w('\n')
+  }
+}
+
+/**
+ * Sample a timeline evenly to show at most N points.
+ * Always includes first, last, peak, and biggest deltas.
+ */
+function sampleTimeline(timeline: readonly WalletReport['timeline'][number][], maxPoints: number): WalletReport['timeline'] {
+  if (timeline.length <= maxPoints) return [...timeline]
+
+  const result = new Map<number, typeof timeline[number]>()
+
+  // always include first and last
+  result.set(0, timeline[0])
+  result.set(timeline.length - 1, timeline[timeline.length - 1])
+
+  // include peak score
+  let peakIdx = 0
+  for (let i = 1; i < timeline.length; i++) {
+    if (timeline[i].score > timeline[peakIdx].score) peakIdx = i
+  }
+  result.set(peakIdx, timeline[peakIdx])
+
+  // include top 5 biggest deltas
+  const byDelta = timeline.map((p, i) => ({ i, absDelta: Math.abs(p.delta) }))
+    .sort((a, b) => b.absDelta - a.absDelta)
+    .slice(0, 5)
+  for (const { i } of byDelta) result.set(i, timeline[i])
+
+  // fill remaining with even spacing
+  const remaining = maxPoints - result.size
+  const step = timeline.length / (remaining + 1)
+  for (let s = 1; s <= remaining; s++) {
+    const idx = Math.round(s * step)
+    if (idx < timeline.length && !result.has(idx)) {
+      result.set(idx, timeline[idx])
+    }
+  }
+
+  // return sorted by index
+  return [...result.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p)
+}
+
 // --- Report printer ---
 
 function printAnalysisReport(r: PrivacyReport) {
@@ -498,6 +664,12 @@ const HELP = `ε-tx — privacy analysis for cryptocurrency transactions
   classify <txid>             how chain analysis would classify a tx
   ring <monero-hash>          Monero ring signature privacy
     --optimise                construct optimal decoy ring
+  batch <addr1> [addr2] ...   full wallet history privacy timeline
+    --max <n>                 max txs per address (default: all)
+    --expand <n>              follow co-spend graph N hops
+    --adversary <model>       casual|exchange|law-enforcement|nation-state
+    --timeline                show per-transaction timeline
+    --csv                     output timeline as CSV (for plotting)
   route <pubkey> <pubkey>     Lightning route privacy analysis
     --amount <sats>           payment amount (default 100000)
   crosschain <address>        cross-chain bridge linking analysis
@@ -510,6 +682,8 @@ const HELP = `ε-tx — privacy analysis for cryptocurrency transactions
 
 examples:
   etx analyse bc1q...
+  etx batch bc1q... bc1p... --timeline
+  etx batch bc1q... --csv > privacy.csv
   etx coinjoin abc123...def --json | jq .efficiency
   etx ring abc123...def --optimise
   etx classify abc123...def
@@ -527,6 +701,7 @@ async function main() {
   try {
     switch (command) {
       case 'analyse': case 'analyze': await cmdAnalyse(); break
+      case 'batch': case 'wallet': await cmdBatch(); break
       case 'coinjoin': case 'cj': await cmdCoinjoin(); break
       case 'ring': await cmdRing(); break
       case 'route': await cmdRoute(); break
